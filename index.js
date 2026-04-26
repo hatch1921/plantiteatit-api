@@ -25,40 +25,39 @@ app.get('/api/health', (req, res) => {
 app.get('/api/setup', async (req, res) => {
   const fs = require('fs');
   const path = require('path');
-  const pool = require('./db/pool');
+  const { Pool } = require('pg');
+
+  const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false },
+    connectionTimeoutMillis: 10000,
+  });
+
   try {
+    // Test connection first
+    const testRes = await pool.query('SELECT NOW() as now');
+    const connectedAt = testRes.rows[0].now;
+
+    // Read and run schema as one block
     const sql = fs.readFileSync(path.join(__dirname, 'db/schema.sql'), 'utf8');
-    // Run each statement individually so we can see which one fails
-    const statements = sql
-      .split(';')
-      .map(s => s.trim())
-      .filter(s => s.length > 0);
+    await pool.query(sql);
 
-    const results = [];
-    for (const stmt of statements) {
-      try {
-        await pool.query(stmt);
-        results.push({ ok: true, stmt: stmt.substring(0, 60) });
-      } catch (err) {
-        results.push({ ok: false, stmt: stmt.substring(0, 60), error: err.message });
-      }
-    }
-
-    const failed = results.filter(r => !r.ok);
     res.json({
-      status: failed.length === 0 ? 'Schema created successfully' : 'Completed with some errors',
-      total: results.length,
-      failed: failed.length,
-      details: results,
+      status: 'Schema created successfully',
+      connected_at: connectedAt,
       ts: new Date().toISOString()
     });
   } catch (err) {
-    console.error('Schema error:', err);
     res.status(500).json({
-      error: err.message,
-      code: err.code,
-      detail: err.detail || null
+      error: err.message || 'Unknown error',
+      code: err.code || null,
+      detail: err.detail || null,
+      hint: err.hint || null,
+      where: err.where || null,
+      stack: err.stack || null,
     });
+  } finally {
+    await pool.end();
   }
 });
 
