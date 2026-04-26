@@ -188,9 +188,7 @@ router.get('/compatibility', async (req, res) => {
         OR s.scientific_name ILIKE $1
         OR s.family ILIKE $1
       )
-      ORDER BY
-        CASE WHEN s.common_name ILIKE $1 THEN 0 ELSE 1 END,
-        s.common_name
+      ORDER BY s.common_name
       LIMIT 5
     `, [searchPattern]);
 
