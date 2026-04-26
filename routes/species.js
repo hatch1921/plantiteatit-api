@@ -91,8 +91,6 @@ router.get('/', async (req, res) => {
       ${joinClause}
       ${whereClause}
       ORDER BY
-        CASE WHEN s.drought_tolerance IS NOT NULL THEN 0 ELSE 1 END,
-        CASE WHEN s.frost_free_days_min IS NOT NULL THEN 0 ELSE 1 END,
         s.common_name
       LIMIT $${params.length + 1}
     `;
