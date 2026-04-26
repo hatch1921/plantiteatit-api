@@ -28,11 +28,37 @@ app.get('/api/setup', async (req, res) => {
   const pool = require('./db/pool');
   try {
     const sql = fs.readFileSync(path.join(__dirname, 'db/schema.sql'), 'utf8');
-    await pool.query(sql);
-    res.json({ status: 'Schema created successfully', ts: new Date().toISOString() });
+    // Run each statement individually so we can see which one fails
+    const statements = sql
+      .split(';')
+      .map(s => s.trim())
+      .filter(s => s.length > 0);
+
+    const results = [];
+    for (const stmt of statements) {
+      try {
+        await pool.query(stmt);
+        results.push({ ok: true, stmt: stmt.substring(0, 60) });
+      } catch (err) {
+        results.push({ ok: false, stmt: stmt.substring(0, 60), error: err.message });
+      }
+    }
+
+    const failed = results.filter(r => !r.ok);
+    res.json({
+      status: failed.length === 0 ? 'Schema created successfully' : 'Completed with some errors',
+      total: results.length,
+      failed: failed.length,
+      details: results,
+      ts: new Date().toISOString()
+    });
   } catch (err) {
-    console.error('Schema error:', err.message);
-    res.status(500).json({ error: err.message });
+    console.error('Schema error:', err);
+    res.status(500).json({
+      error: err.message,
+      code: err.code,
+      detail: err.detail || null
+    });
   }
 });
 
