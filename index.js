@@ -21,6 +21,21 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// TEMPORARY SETUP ROUTE — remove after schema is created
+app.get('/api/setup', async (req, res) => {
+  const fs = require('fs');
+  const path = require('path');
+  const pool = require('./db/pool');
+  try {
+    const sql = fs.readFileSync(path.join(__dirname, 'db/schema.sql'), 'utf8');
+    await pool.query(sql);
+    res.json({ status: 'Schema created successfully', ts: new Date().toISOString() });
+  } catch (err) {
+    console.error('Schema error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.use((req, res) => {
   res.status(404).json({ error: 'Not found' });
 });
