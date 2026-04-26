@@ -15,7 +15,7 @@ function safeInt(v) {
 }
 
 // GET /api/species
-// Query params: county (optional), zone, elevation, category, native_only, limit
+// Query params: county, zone, elevation, category, native_only, limit
 router.get('/', async (req, res) => {
   try {
     const {
@@ -31,11 +31,11 @@ router.get('/', async (req, res) => {
     const conditions = [];
     let joinClause = '';
 
-    // County filter — optional, uses JOIN only if county data exists
+    // County filter — LEFT JOIN so county is optional
     if (county) {
-      joinClause = `LEFT JOIN species_counties sc ON sc.species_id = s.id`;
+      joinClause = `JOIN species_counties sc ON sc.species_id = s.id`;
       params.push(county.padStart(5, '0'));
-      conditions.push(`(sc.county_fips = $${params.length} OR sc.county_fips IS NULL)`);
+      conditions.push(`sc.county_fips = $${params.length}`);
     }
 
     // Hardiness zone filter
@@ -48,14 +48,15 @@ router.get('/', async (req, res) => {
       conditions.push(`(sz.zone_max_num IS NULL OR sz.zone_max_num >= $${params.length})`);
     }
 
-    // Elevation filter
+    // Elevation filter — exclude plants that explicitly can't grow at this elevation
     const elevFt = safeInt(elevation);
     if (elevFt !== null) {
       params.push(elevFt);
-      conditions.push(`(
-        s.elevation_min_ft IS NULL OR s.elevation_max_ft IS NULL OR
-        (s.elevation_min_ft <= $${params.length} AND s.elevation_max_ft >= $${params.length})
-      )`);
+      // Only exclude if elevation_max_ft is set AND user elevation exceeds it
+      conditions.push(`(s.elevation_max_ft IS NULL OR s.elevation_max_ft >= $${params.length})`);
+      params.push(elevFt);
+      // Only exclude if elevation_min_ft is set AND user elevation is below it
+      conditions.push(`(s.elevation_min_ft IS NULL OR s.elevation_min_ft <= $${params.length})`);
     }
 
     // Category filter
@@ -65,14 +66,15 @@ router.get('/', async (req, res) => {
     }
 
     // Native only
-    if (native_only === 'true') {
-      conditions.push(`s.native_status ILIKE '%N%'`);
+    if (native_only === 'true' && county) {
+      conditions.push(`sc.native_status ILIKE '%N%'`);
     }
 
     const whereClause = conditions.length
       ? `WHERE ${conditions.join(' AND ')}`
       : '';
 
+    // Order: prioritize plants with characteristics data, then by name
     const query = `
       SELECT DISTINCT
         s.id, s.usda_symbol, s.scientific_name, s.common_name,
@@ -84,10 +86,14 @@ router.get('/', async (req, res) => {
         s.temp_min_f, s.precip_min_in, s.precip_max_in,
         s.toxicity, s.wildlife_value,
         s.image_url, s.image_source, s.image_license, s.image_attribution
+        ${county ? ', sc.native_status AS county_native_status' : ''}
       FROM species s
       ${joinClause}
       ${whereClause}
-      ORDER BY s.common_name
+      ORDER BY
+        CASE WHEN s.drought_tolerance IS NOT NULL THEN 0 ELSE 1 END,
+        CASE WHEN s.frost_free_days_min IS NOT NULL THEN 0 ELSE 1 END,
+        s.common_name
       LIMIT $${params.length + 1}
     `;
 
@@ -108,7 +114,6 @@ router.get('/', async (req, res) => {
       elevation: elevFt,
       total: rows.length,
       categories,
-      note: county ? 'county filter active' : 'no county data yet — showing all species matching zone/elevation'
     });
 
   } catch (err) {
