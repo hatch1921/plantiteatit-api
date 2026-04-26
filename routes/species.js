@@ -15,7 +15,7 @@ function safeInt(v) {
 }
 
 // GET /api/species
-// Query params: county, zone, elevation, category, native_only, limit
+// Query params: county (optional), zone, elevation, category, native_only, limit
 router.get('/', async (req, res) => {
   try {
     const {
@@ -27,25 +27,21 @@ router.get('/', async (req, res) => {
       limit = 150,
     } = req.query;
 
-    if (!county) {
-      return res.status(400).json({ error: 'county FIPS is required' });
-    }
-
     const params = [];
     const conditions = [];
-    const joins = [];
+    let joinClause = '';
 
-    // Base join — county distribution
-    joins.push(`JOIN species_counties sc ON sc.species_id = s.id`);
-
-    // County filter
-    params.push(county.padStart(5, '0'));
-    conditions.push(`sc.county_fips = $${params.length}`);
+    // County filter — optional, uses JOIN only if county data exists
+    if (county) {
+      joinClause = `LEFT JOIN species_counties sc ON sc.species_id = s.id`;
+      params.push(county.padStart(5, '0'));
+      conditions.push(`(sc.county_fips = $${params.length} OR sc.county_fips IS NULL)`);
+    }
 
     // Hardiness zone filter
     const zoneNum = zoneToNum(zone);
     if (zoneNum !== null) {
-      joins.push(`LEFT JOIN species_zones sz ON sz.species_id = s.id`);
+      joinClause += ` LEFT JOIN species_zones sz ON sz.species_id = s.id`;
       params.push(zoneNum);
       conditions.push(`(sz.zone_min_num IS NULL OR sz.zone_min_num <= $${params.length})`);
       params.push(zoneNum);
@@ -68,9 +64,9 @@ router.get('/', async (req, res) => {
       conditions.push(`s.category ILIKE $${params.length}`);
     }
 
-    // Native only filter
+    // Native only
     if (native_only === 'true') {
-      conditions.push(`sc.native_status ILIKE '%N%'`);
+      conditions.push(`s.native_status ILIKE '%N%'`);
     }
 
     const whereClause = conditions.length
@@ -87,14 +83,11 @@ router.get('/', async (req, res) => {
         s.elevation_min_ft, s.elevation_max_ft,
         s.temp_min_f, s.precip_min_in, s.precip_max_in,
         s.toxicity, s.wildlife_value,
-        s.image_url, s.image_source, s.image_license, s.image_attribution,
-        sc.native_status AS county_native_status
+        s.image_url, s.image_source, s.image_license, s.image_attribution
       FROM species s
-      ${joins.join(' ')}
+      ${joinClause}
       ${whereClause}
-      ORDER BY
-        CASE WHEN sc.native_status ILIKE '%N%' THEN 0 ELSE 1 END,
-        s.category, s.common_name
+      ORDER BY s.common_name
       LIMIT $${params.length + 1}
     `;
 
@@ -110,16 +103,17 @@ router.get('/', async (req, res) => {
     }
 
     res.json({
-      county,
+      county: county || null,
       zone: zone || null,
       elevation: elevFt,
       total: rows.length,
       categories,
+      note: county ? 'county filter active' : 'no county data yet — showing all species matching zone/elevation'
     });
 
   } catch (err) {
     console.error('Species query error:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Internal server error', detail: err.message });
   }
 });
 
@@ -136,9 +130,7 @@ router.get('/:id', async (req, res) => {
       GROUP BY s.id
     `, [req.params.id]);
 
-    if (!rows.length) {
-      return res.status(404).json({ error: 'Species not found' });
-    }
+    if (!rows.length) return res.status(404).json({ error: 'Species not found' });
     res.json(rows[0]);
   } catch (err) {
     console.error('Species detail error:', err);
