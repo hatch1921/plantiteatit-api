@@ -1,8 +1,7 @@
 const express = require('express');
 const router = express.Router();
 
-// GET /api/climate?lat=32.22&lng=-110.97
-// Fetches elevation and climate normals from Open-Meteo
+// GET /api/climate?lat=31.44&lng=-110.18
 router.get('/', async (req, res) => {
   try {
     const { lat, lng } = req.query;
@@ -18,7 +17,7 @@ router.get('/', async (req, res) => {
       return res.status(400).json({ error: 'lat and lng must be valid numbers' });
     }
 
-    // Fetch elevation
+    // Step 1: Elevation from Open-Meteo
     const elevRes = await fetch(
       `https://api.open-meteo.com/v1/elevation?latitude=${latitude}&longitude=${longitude}`
     );
@@ -26,31 +25,37 @@ router.get('/', async (req, res) => {
     const elevationM = elevData?.elevation?.[0] ?? 0;
     const elevationFt = Math.round(elevationM * 3.28084);
 
-    // Fetch climate normals (ERA5 reanalysis — 30-year historical averages)
-    const climateParams = new URLSearchParams({
+    // Step 2: Historical weather — use archive API with ERA5
+    // Pull last 10 years of daily data to compute climate normals
+    const endDate = '2024-12-31';
+    const startDate = '2015-01-01';
+
+    const archiveParams = new URLSearchParams({
       latitude: latitude.toString(),
       longitude: longitude.toString(),
-      monthly: [
+      start_date: startDate,
+      end_date: endDate,
+      daily: [
         'temperature_2m_max',
         'temperature_2m_min',
         'precipitation_sum',
-        'relative_humidity_2m_mean',
-        'wind_speed_10m_mean',
-        'shortwave_radiation_sum',
+        'wind_speed_10m_max',
       ].join(','),
-      models: 'ERA5',
-      start_date: '1991-01-01',
-      end_date: '2020-12-31',
+      timezone: 'America/Phoenix',
     });
 
-    const climateRes = await fetch(
-      `https://climate-api.open-meteo.com/v1/climate?${climateParams}`
+    const archiveRes = await fetch(
+      `https://archive-api.open-meteo.com/v1/archive?${archiveParams}`
     );
-    const climateData = await climateRes.json();
-    const monthly = climateData?.monthly;
 
-    if (!monthly) {
-      // Return at least elevation if climate API fails
+    if (!archiveRes.ok) {
+      throw new Error(`Open-Meteo archive API error: ${archiveRes.status}`);
+    }
+
+    const archiveData = await archiveRes.json();
+    const daily = archiveData?.daily;
+
+    if (!daily || !daily.time) {
       return res.json({
         elevationFt,
         elevationM: Math.round(elevationM),
@@ -58,60 +63,63 @@ router.get('/', async (req, res) => {
       });
     }
 
-    const monthlyMinC = monthly.temperature_2m_min ?? [];
-    const monthlyMaxC = monthly.temperature_2m_max ?? [];
-    const monthlyPrecip = monthly.precipitation_sum ?? [];
-    const monthlyHumidity = monthly.relative_humidity_2m_mean ?? [];
-
-    // Helper: Celsius to Fahrenheit
     const cToF = (c) => Math.round(((c * 9) / 5 + 32) * 10) / 10;
+    const avg = (arr) => arr.filter(v => v !== null).reduce((a, b) => a + b, 0) / arr.filter(v => v !== null).length;
 
-    // Annual precipitation
-    const annualPrecipMm = monthlyPrecip.reduce((a, b) => a + b, 0);
+    // Group by month (0-11)
+    const monthlyMinC = Array(12).fill(null).map(() => []);
+    const monthlyMaxC = Array(12).fill(null).map(() => []);
+    const monthlyPrecipMm = Array(12).fill(null).map(() => []);
+
+    daily.time.forEach((date, i) => {
+      const month = new Date(date).getMonth();
+      if (daily.temperature_2m_min[i] !== null) monthlyMinC[month].push(daily.temperature_2m_min[i]);
+      if (daily.temperature_2m_max[i] !== null) monthlyMaxC[month].push(daily.temperature_2m_max[i]);
+      if (daily.precipitation_sum[i] !== null) monthlyPrecipMm[month].push(daily.precipitation_sum[i]);
+    });
+
+    const monthlyAvgMinC = monthlyMinC.map(avg);
+    const monthlyAvgMaxC = monthlyMaxC.map(avg);
+    const monthlyAvgPrecipMm = monthlyPrecipMm.map(vals => vals.reduce((a, b) => a + b, 0) / (vals.length / 30));
+
+    const overallMinC = avg(monthlyAvgMinC.filter(v => !isNaN(v)));
+    const overallMaxC = avg(monthlyAvgMaxC.filter(v => !isNaN(v)));
+    const annualPrecipMm = monthlyAvgPrecipMm.filter(v => !isNaN(v)).reduce((a, b) => a + b, 0);
     const annualPrecipIn = Math.round((annualPrecipMm / 25.4) * 10) / 10;
 
-    // Average min and max temps
-    const avgMinC = monthlyMinC.reduce((a, b) => a + b, 0) / 12;
-    const avgMaxC = monthlyMaxC.reduce((a, b) => a + b, 0) / 12;
-    const avgHumidity = Math.round(monthlyHumidity.reduce((a, b) => a + b, 0) / 12);
-
-    // Frost dates — find last spring frost and first fall frost
+    // Frost dates
     const lastFrostMonth = (() => {
       for (let m = 5; m >= 0; m--) {
-        if (monthlyMinC[m] <= 0) return m + 2; // 1-indexed, next month is safe
+        if (!isNaN(monthlyAvgMinC[m]) && monthlyAvgMinC[m] <= 0) return m + 2;
       }
       return 1;
     })();
 
     const firstFrostMonth = (() => {
       for (let m = 6; m < 12; m++) {
-        if (monthlyMinC[m] <= 0) return m + 1; // 1-indexed
+        if (!isNaN(monthlyAvgMinC[m]) && monthlyAvgMinC[m] <= 0) return m + 1;
       }
       return 12;
     })();
 
-    // Frost-free days estimate
-    const frostFreeMonths = monthlyMinC.filter(t => t > 0).length;
+    const frostFreeMonths = monthlyAvgMinC.filter(t => !isNaN(t) && t > 0).length;
     const frostFreeDays = frostFreeMonths * 30;
 
-    // Monthly data formatted for client
     const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     const monthlyFormatted = monthNames.map((name, i) => ({
       month: name,
-      minF: cToF(monthlyMinC[i] ?? 0),
-      maxF: cToF(monthlyMaxC[i] ?? 0),
-      precipIn: Math.round((monthlyPrecip[i] ?? 0) / 25.4 * 10) / 10,
-      humidityPct: Math.round(monthlyHumidity[i] ?? 0),
-      hasFrost: (monthlyMinC[i] ?? 0) <= 0,
+      minF: isNaN(monthlyAvgMinC[i]) ? null : cToF(monthlyAvgMinC[i]),
+      maxF: isNaN(monthlyAvgMaxC[i]) ? null : cToF(monthlyAvgMaxC[i]),
+      precipIn: isNaN(monthlyAvgPrecipMm[i]) ? null : Math.round((monthlyAvgPrecipMm[i] / 25.4) * 10) / 10,
+      hasFrost: !isNaN(monthlyAvgMinC[i]) && monthlyAvgMinC[i] <= 0,
     }));
 
     res.json({
       elevationFt,
       elevationM: Math.round(elevationM),
       annualPrecipIn,
-      avgTempMinF: cToF(avgMinC),
-      avgTempMaxF: cToF(avgMaxC),
-      humidityAvgPct: avgHumidity,
+      avgTempMinF: cToF(overallMinC),
+      avgTempMaxF: cToF(overallMaxC),
       frostFreeDays,
       lastFrostMonth,
       firstFrostMonth,
@@ -120,7 +128,7 @@ router.get('/', async (req, res) => {
 
   } catch (err) {
     console.error('Climate API error:', err);
-    res.status(500).json({ error: 'Failed to fetch climate data' });
+    res.status(500).json({ error: 'Failed to fetch climate data', detail: err.message });
   }
 });
 
