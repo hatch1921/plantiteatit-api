@@ -70,6 +70,7 @@ router.get('/', async (req, res) => {
       LEFT JOIN species_veggies v ON v.species_id = s.id
       WHERE sc.county_fips = $1
         AND s.frost_free_days_min IS NOT NULL
+        AND s.food_safe = TRUE
         ${elevCondition}
         ${zoneCondition}
         ${nativeFilter}
@@ -185,6 +186,7 @@ router.get('/compatibility', async (req, res) => {
         OR s.scientific_name ILIKE $1
         OR s.family ILIKE $1
       )
+      AND s.food_safe = TRUE
       ORDER BY s.common_name
       LIMIT 5
     `, [searchPattern]);

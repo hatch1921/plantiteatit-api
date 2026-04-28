@@ -70,6 +70,9 @@ router.get('/', async (req, res) => {
       conditions.push(`sc.native_status ILIKE '%N%'`);
     }
 
+    // Food safety -- only show verified safe species
+    conditions.push(`s.food_safe = TRUE`);
+
     const whereClause = conditions.length
       ? `WHERE ${conditions.join(' AND ')}`
       : '';
