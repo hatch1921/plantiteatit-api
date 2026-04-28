@@ -1,12 +1,10 @@
 /**
- * PlantItEatIt — All States Ingestion Script
- * Reads all CSV/TXT files from data/states/ and ingests them.
- * Supports multiple files per state (e.g. Texas split by county group).
- * Includes checkpointing — run with --resume to continue after stall.
+ * PlantItEatIt — Lean All States Ingestion
+ * Only ingests species with food plant characteristics (frost_free_days_min IS NOT NULL)
+ * Dramatically reduces storage vs full species ingestion
  *
  * Usage:        node scripts/ingest-all-states.js
  * Resume:       node scripts/ingest-all-states.js --resume
- * Single state: node scripts/ingest-all-states.js --state AZ
  */
 
 require('dotenv').config();
@@ -15,11 +13,10 @@ const path = require('path');
 const { parse } = require('csv-parse');
 const pool = require('../db/pool');
 
-const STATES_DIR       = path.join(__dirname, '../data/states');
-const CHECKPOINT_FILE  = path.join(__dirname, '../data/ingest-checkpoint.json');
-const BATCH_SIZE       = 200;
+const STATES_DIR      = path.join(__dirname, '../data/states');
+const CHECKPOINT_FILE = path.join(__dirname, '../data/ingest-checkpoint.json');
+const BATCH_SIZE      = 500;
 
-// State FIPS lookup and county lists
 const STATE_META = {
   AZ: { fips:'04', counties:['04001','04003','04005','04007','04009','04011','04012','04013','04015','04017','04019','04021','04023','04025','04027'] },
   NM: { fips:'35', counties:['35001','35003','35005','35006','35007','35009','35011','35013','35015','35017','35019','35021','35023','35025','35027','35028','35029','35031','35033','35035','35037','35039','35041','35043','35045','35047','35049','35051','35053','35055','35057','35059','35061'] },
@@ -35,9 +32,14 @@ const STATE_META = {
   WY: { fips:'56', counties:['56001','56003','56005','56007','56009','56011','56013','56015','56017','56019','56021','56023','56025','56027','56029','56031','56033','56035','56037','56039','56041','56043','56045'] },
   FL: { fips:'12', counties:['12001','12003','12005','12007','12009','12011','12013','12015','12017','12019','12021','12023','12027','12029','12031','12033','12035','12037','12039','12041','12043','12045','12047','12049','12051','12053','12055','12057','12059','12061','12063','12065','12067','12069','12071','12073','12075','12077','12079','12081','12083','12085','12086','12087','12089','12091','12093','12095','12097','12099','12101','12103','12105','12107','12109','12111','12113','12115','12117','12119','12121','12123','12125','12127','12129','12131','12133'] },
   GA: { fips:'13', counties:['13001','13003','13005','13007','13009','13011','13013','13015','13017','13019','13021','13023','13025','13027','13029','13031','13033','13035','13037','13039','13041','13043','13045','13047','13049','13051','13053','13055','13057','13059','13061','13063','13065','13067','13069','13071','13073','13075','13077','13079','13081','13083','13085','13087','13089','13091','13093','13095','13097','13099','13101','13103','13105','13107','13109','13111','13113','13115','13117','13119','13121','13123','13125','13127','13129','13131','13133','13135','13137','13139','13141','13143','13145','13147','13149','13151','13153','13155','13157','13159','13161','13163','13165','13167','13169','13171','13173','13175','13177','13179','13181','13183','13185','13187','13189','13191','13193','13195','13197','13199','13201','13205','13207','13209','13211','13213','13215','13217','13219','13221','13223','13225','13227','13229','13231','13233','13235','13237','13239','13241','13243','13245','13247','13249','13251','13253','13255','13257','13259','13261','13263','13265','13267','13269','13271','13273','13275','13277','13279','13281','13283','13285','13287','13289','13291','13293','13295','13297','13299','13301','13303','13305','13307','13309','13311','13313','13315','13317','13319','13321'] },
+  IL: { fips:'17', counties:['17001','17003','17005','17007','17009','17011','17013','17015','17017','17019','17021','17023','17025','17027','17029','17031','17033','17035','17037','17039','17041','17043','17045','17047','17049','17051','17053','17055','17057','17059','17061','17063','17065','17067','17069','17071','17073','17075','17077','17079','17081','17083','17085','17087','17089','17091','17093','17095','17097','17099','17101','17103','17105','17107','17109','17111','17113','17115','17117','17119','17121','17123','17125','17127','17129','17131','17133','17135','17137','17139','17141','17143','17145','17147','17149','17151','17153','17155','17157','17159','17161','17163','17165','17167','17169','17171','17173','17175','17177','17179','17181','17183','17185','17187','17189','17191','17193','17195','17197','17199','17201','17203'] },
+  OH: { fips:'39', counties:['39001','39003','39005','39007','39009','39011','39013','39015','39017','39019','39021','39023','39025','39027','39029','39031','39033','39035','39037','39039','39041','39043','39045','39047','39049','39051','39053','39055','39057','39059','39061','39063','39065','39067','39069','39071','39073','39075','39077','39079','39081','39083','39085','39087','39089','39091','39093','39095','39097','39099','39101','39103','39105','39107','39109','39111','39113','39115','39117','39119','39121','39123','39125','39127','39129','39131','39133','39135','39137','39139','39141','39143','39145','39147','39149','39151','39153','39155','39157','39159','39161','39163','39165','39167','39169','39171','39173','39175'] },
+  PA: { fips:'42', counties:['42001','42003','42005','42007','42009','42011','42013','42015','42017','42019','42021','42023','42025','42027','42029','42031','42033','42035','42037','42039','42041','42043','42045','42047','42049','42051','42053','42055','42057','42059','42061','42063','42065','42067','42069','42071','42073','42075','42077','42079','42081','42083','42085','42087','42089','42091','42093','42095','42097','42099','42101','42103','42105','42107','42109','42111','42113','42115','42117','42119','42121','42123','42125','42127','42129','42131','42133'] },
+  NY: { fips:'36', counties:['36001','36003','36005','36007','36009','36011','36013','36015','36017','36019','36021','36023','36025','36027','36029','36031','36033','36035','36037','36039','36041','36043','36045','36047','36049','36051','36053','36055','36057','36059','36061','36063','36065','36067','36069','36071','36073','36075','36077','36079','36081','36083','36085','36087','36089','36091','36093','36095','36097','36099','36101','36103','36105','36107','36109','36111','36113','36115','36117','36119','36121','36123'] },
+  NC: { fips:'37', counties:['37001','37003','37005','37007','37009','37011','37013','37015','37017','37019','37021','37023','37025','37027','37029','37031','37033','37035','37037','37039','37041','37043','37045','37047','37049','37051','37053','37055','37057','37059','37061','37063','37065','37067','37069','37071','37073','37075','37077','37079','37081','37083','37085','37087','37089','37091','37093','37095','37097','37099','37101','37103','37105','37107','37109','37111','37113','37115','37117','37119','37121','37123','37125','37127','37129','37131','37133','37135','37137','37139','37141','37143','37145','37147','37149','37151','37153','37155','37157','37159','37161','37163','37165','37167','37169','37171','37173','37175','37177','37179','37181','37183','37185','37187','37189','37191','37193','37195','37197','37199'] },
+  MI: { fips:'26', counties:['26001','26003','26005','26007','26009','26011','26013','26015','26017','26019','26021','26023','26025','26027','26029','26031','26033','26035','26037','26039','26041','26043','26045','26047','26049','26051','26053','26055','26057','26059','26061','26063','26065','26067','26069','26071','26073','26075','26077','26079','26081','26083','26085','26087','26089','26091','26093','26095','26097','26099','26101','26103','26105','26107','26109','26111','26113','26115','26117','26119','26121','26123','26125','26127','26129','26131','26133','26135','26137','26139','26141','26143','26145','26147','26149','26151','26153','26155','26157','26159','26161','26163','26165'] },
 };
 
-// Detect which state a file belongs to based on filename
 function detectState(filename) {
   const lower = filename.toLowerCase();
   if (lower.includes('arizona') || lower.startsWith('az_')) return 'AZ';
@@ -54,31 +56,28 @@ function detectState(filename) {
   if (lower.includes('wyoming') || lower.startsWith('wy_')) return 'WY';
   if (lower.includes('florida') || lower.startsWith('fl_')) return 'FL';
   if (lower.includes('georgia') || lower.startsWith('ga_')) return 'GA';
+  if (lower.includes('illinois') || lower.startsWith('il_')) return 'IL';
+  if (lower.includes('ohio') || lower.startsWith('oh_')) return 'OH';
+  if (lower.includes('pennsylvania') || lower.startsWith('pa_')) return 'PA';
+  if (lower.includes('new_york') || lower.startsWith('ny_')) return 'NY';
+  if (lower.includes('north_carolina') || lower.startsWith('nc_')) return 'NC';
+  if (lower.includes('michigan') || lower.startsWith('mi_')) return 'MI';
   return null;
 }
 
 function parseCSV(filePath) {
   return new Promise((resolve, reject) => {
-    const records = [];
     const raw = fs.readFileSync(filePath, 'utf8');
-
-    // Detect and skip metadata header line
     const lines = raw.split('\n');
-    const startLine = lines[0].toLowerCase().includes('search type') ||
-                      lines[0].toLowerCase().includes('search:') ? 2 : 1;
-
+    const startLine = lines[0].toLowerCase().includes('search type') ? 2 : 1;
     const delimiter = lines[0].includes('\t') ? '\t' : ',';
-
     const content = lines.slice(startLine - 1).join('\n');
 
+    const records = [];
     require('stream').Readable.from([content])
       .pipe(parse({
-        columns: true,
-        skip_empty_lines: true,
-        trim: true,
-        delimiter,
-        relax_quotes: true,
-        relax_column_count: true,
+        columns: true, skip_empty_lines: true, trim: true,
+        delimiter, relax_quotes: true, relax_column_count: true,
       }))
       .on('data', r => records.push(r))
       .on('end', () => resolve(records))
@@ -87,76 +86,12 @@ function parseCSV(filePath) {
 }
 
 function getSymbol(row) {
-  return (
-    row['Symbol'] || row['Accepted Symbol'] || row['acceptedSymbol'] ||
-    row['symbol'] || row['SYMBOL'] || ''
-  ).trim().replace(/['"]/g, '');
-}
-
-async function ingestFile(filePath, stateSymbol) {
-  const meta = STATE_META[stateSymbol];
-  if (!meta) {
-    console.log(`  No metadata for ${stateSymbol} — skipping`);
-    return 0;
-  }
-
-  const records = await parseCSV(filePath);
-  if (records.length === 0) {
-    console.log(`  No records parsed from ${path.basename(filePath)}`);
-    return 0;
-  }
-
-  console.log(`  ${path.basename(filePath)}: ${records.length} records`);
-
-  let matched = 0;
-  let inserted = 0;
-
-  for (let i = 0; i < records.length; i += BATCH_SIZE) {
-    const batch = records.slice(i, i + BATCH_SIZE);
-    const client = await pool.connect();
-
-    try {
-      await client.query('BEGIN');
-
-      for (const row of batch) {
-        const symbol = getSymbol(row);
-        if (!symbol) continue;
-
-        const res = await client.query(
-          'SELECT id FROM species WHERE usda_symbol = $1', [symbol]
-        );
-        if (!res.rows.length) continue;
-
-        matched++;
-        const speciesId = res.rows[0].id;
-        const nativeStatus = row['Native Status'] || row['Nativity'] || null;
-
-        for (const fips of meta.counties) {
-          await client.query(`
-            INSERT INTO species_counties (species_id, state_fips, county_fips, native_status)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT DO NOTHING
-          `, [speciesId, meta.fips, fips, nativeStatus]);
-          inserted++;
-        }
-      }
-
-      await client.query('COMMIT');
-    } catch (err) {
-      await client.query('ROLLBACK');
-      console.error(`  Batch error:`, err.message);
-    } finally {
-      client.release();
-    }
-  }
-
-  return inserted;
+  return (row['Symbol'] || row['Accepted Symbol'] || row['acceptedSymbol'] || row['symbol'] || '')
+    .trim().replace(/['"]/g, '');
 }
 
 function loadCheckpoint() {
-  if (fs.existsSync(CHECKPOINT_FILE)) {
-    return JSON.parse(fs.readFileSync(CHECKPOINT_FILE, 'utf8'));
-  }
+  if (fs.existsSync(CHECKPOINT_FILE)) return JSON.parse(fs.readFileSync(CHECKPOINT_FILE, 'utf8'));
   return { processed: [] };
 }
 
@@ -173,47 +108,49 @@ async function main() {
 
   const checkpoint = loadCheckpoint();
 
-  console.log('PlantItEatIt — All States Ingestion');
-  console.log('=====================================');
+  console.log('PlantItEatIt — Lean Food Plant Ingestion');
+  console.log('=========================================');
+  console.log('Only ingesting species with food plant characteristics.');
 
-  // Get all files in states directory
+  // Load all enriched food plant symbols from DB once
+  console.log('\nLoading enriched food plant symbols...');
+  const { rows: enriched } = await pool.query(`
+    SELECT usda_symbol FROM species WHERE frost_free_days_min IS NOT NULL
+  `);
+  const foodSymbols = new Set(enriched.map(r => r.usda_symbol));
+  console.log(`Found ${foodSymbols.size} food plant species to match against.`);
+
   const allFiles = fs.readdirSync(STATES_DIR)
     .filter(f => f.endsWith('.csv') || f.endsWith('.txt'))
     .sort();
 
-  console.log(`Found ${allFiles.length} files in data/states/`);
+  console.log(`Found ${allFiles.length} state files in data/states/\n`);
 
-  // Group files by state
   const byState = {};
   const unrecognized = [];
 
   for (const file of allFiles) {
     const stateSymbol = detectState(file);
-    if (!stateSymbol) {
-      unrecognized.push(file);
-      continue;
-    }
+    if (!stateSymbol) { unrecognized.push(file); continue; }
     if (!byState[stateSymbol]) byState[stateSymbol] = [];
     byState[stateSymbol].push(file);
   }
 
   console.log(`States detected: ${Object.keys(byState).join(', ')}`);
-  if (unrecognized.length > 0) {
-    console.log(`Unrecognized files (skipping): ${unrecognized.join(', ')}`);
-  }
+  if (unrecognized.length > 0) console.log(`Unrecognized (skipping): ${unrecognized.join(', ')}`);
 
   let totalInserted = 0;
 
   for (const [stateSymbol, files] of Object.entries(byState)) {
     if (stateFilter && stateSymbol !== stateFilter) continue;
 
-    const alreadyDone = files.every(f => checkpoint.processed.includes(f));
-    if (resume && alreadyDone) {
-      console.log(`\n${stateSymbol}: already complete — skipping`);
-      continue;
-    }
+    const meta = STATE_META[stateSymbol];
+    if (!meta) { console.log(`\n${stateSymbol}: No county metadata — skipping`); continue; }
 
-    console.log(`\nProcessing ${stateSymbol} (${files.length} file${files.length > 1 ? 's' : ''})...`);
+    const alreadyDone = files.every(f => checkpoint.processed.includes(f));
+    if (resume && alreadyDone) { console.log(`${stateSymbol}: already complete — skipping`); continue; }
+
+    console.log(`\nProcessing ${stateSymbol} (${files.length} file${files.length > 1 ? 's' : ''}, ${meta.counties.length} counties)...`);
 
     for (const file of files) {
       if (resume && checkpoint.processed.includes(file)) {
@@ -222,22 +159,66 @@ async function main() {
       }
 
       const filePath = path.join(STATES_DIR, file);
-      const inserted = await ingestFile(filePath, stateSymbol);
+      const records = await parseCSV(filePath);
+
+      // Filter to food plants only
+      const foodRecords = records.filter(row => foodSymbols.has(getSymbol(row)));
+      console.log(`  ${file}: ${records.length} total records, ${foodRecords.length} food plant matches`);
+
+      if (foodRecords.length === 0) {
+        checkpoint.processed.push(file);
+        saveCheckpoint(checkpoint);
+        continue;
+      }
+
+      let inserted = 0;
+
+      for (let i = 0; i < foodRecords.length; i += BATCH_SIZE) {
+        const batch = foodRecords.slice(i, i + BATCH_SIZE);
+        const client = await pool.connect();
+
+        try {
+          await client.query('BEGIN');
+
+          for (const row of batch) {
+            const symbol = getSymbol(row);
+            const res = await client.query('SELECT id FROM species WHERE usda_symbol = $1', [symbol]);
+            if (!res.rows.length) continue;
+
+            const speciesId = res.rows[0].id;
+            const nativeStatus = row['Native Status'] || row['Nativity'] || null;
+
+            for (const fips of meta.counties) {
+              await client.query(`
+                INSERT INTO species_counties (species_id, state_fips, county_fips, native_status)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT DO NOTHING
+              `, [speciesId, meta.fips, fips, nativeStatus]);
+              inserted++;
+            }
+          }
+
+          await client.query('COMMIT');
+        } catch (err) {
+          await client.query('ROLLBACK');
+          console.error(`  Batch error:`, err.message);
+        } finally {
+          client.release();
+        }
+      }
+
       totalInserted += inserted;
       console.log(`  ${file}: ${inserted} county records inserted`);
-
       checkpoint.processed.push(file);
       saveCheckpoint(checkpoint);
     }
   }
 
-  console.log(`\n✓ Complete. Total county records inserted: ${totalInserted}`);
-  console.log(`  Files processed: ${checkpoint.processed.length}`);
+  console.log(`\n✓ Complete`);
+  console.log(`  Total county records inserted: ${totalInserted}`);
+  console.log(`  Files processed this run: ${checkpoint.processed.length}`);
 
   await pool.end();
 }
 
-main().catch(err => {
-  console.error('Fatal:', err.message);
-  process.exit(1);
-});
+main().catch(err => { console.error('Fatal:', err.message); process.exit(1); });
