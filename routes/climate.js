@@ -1,10 +1,17 @@
 const express = require('express');
 const router = express.Router();
+const pool = require('../db/pool');
 
-// GET /api/climate?lat=31.44&lng=-110.18
+// GET /api/climate?lat=31.44&lng=-110.18&county=04003
+//
+// county param is optional but strongly recommended.
+// If provided, climate data is served from county_climate cache (fast, no rate limits).
+// Elevation is always fetched live from GPS coordinates.
+// Falls back to Open-Meteo archive API if county not in cache.
+
 router.get('/', async (req, res) => {
   try {
-    const { lat, lng } = req.query;
+    const { lat, lng, county } = req.query;
 
     if (!lat || !lng) {
       return res.status(400).json({ error: 'lat and lng are required' });
@@ -17,7 +24,7 @@ router.get('/', async (req, res) => {
       return res.status(400).json({ error: 'lat and lng must be valid numbers' });
     }
 
-    // Step 1: Elevation from Open-Meteo
+    // Always fetch elevation live -- it is GPS-specific, not county-level
     const elevRes = await fetch(
       `https://api.open-meteo.com/v1/elevation?latitude=${latitude}&longitude=${longitude}`
     );
@@ -25,8 +32,33 @@ router.get('/', async (req, res) => {
     const elevationM = elevData?.elevation?.[0] ?? 0;
     const elevationFt = Math.round(elevationM * 3.28084);
 
-    // Step 2: Historical weather — use archive API with ERA5
-    // Pull last 10 years of daily data to compute climate normals
+    // If county FIPS provided, try cache first
+    if (county) {
+      const { rows } = await pool.query(
+        'SELECT * FROM county_climate WHERE county_fips = $1',
+        [county]
+      );
+
+      if (rows.length > 0) {
+        const c = rows[0];
+        return res.json({
+          elevationFt,                              // live from GPS
+          elevationM: Math.round(elevationM),
+          annualPrecipIn: parseFloat(c.annual_precip_in),
+          avgTempMinF: parseFloat(c.avg_temp_min_f),
+          avgTempMaxF: parseFloat(c.avg_temp_max_f),
+          frostFreeDays: c.frost_free_days,
+          hardinessZone: c.hardiness_zone,
+          climateDescriptor: c.climate_descriptor,
+          monsoonMonth: c.monsoon_month,
+          source: 'cache',
+        });
+      }
+    }
+
+    // No cache hit -- fall back to Open-Meteo archive API
+    console.log(`Cache miss for county ${county || 'unknown'} -- calling Open-Meteo archive`);
+
     const endDate = '2024-12-31';
     const startDate = '2015-01-01';
 
@@ -35,13 +67,10 @@ router.get('/', async (req, res) => {
       longitude: longitude.toString(),
       start_date: startDate,
       end_date: endDate,
-      daily: [
-        'temperature_2m_max',
-        'temperature_2m_min',
-        'precipitation_sum',
-        'wind_speed_10m_max',
-      ].join(','),
-      timezone: 'America/Phoenix',
+      daily: ['temperature_2m_max','temperature_2m_min','precipitation_sum'].join(','),
+      temperature_unit: 'fahrenheit',
+      precipitation_unit: 'inch',
+      timezone: 'auto',
     });
 
     const archiveRes = await fetch(
@@ -59,71 +88,34 @@ router.get('/', async (req, res) => {
       return res.json({
         elevationFt,
         elevationM: Math.round(elevationM),
-        error: 'Climate data unavailable — elevation only',
+        error: 'Climate data unavailable',
+        source: 'elevation-only',
       });
     }
 
-    const cToF = (c) => Math.round(((c * 9) / 5 + 32) * 10) / 10;
-    const avg = (arr) => arr.filter(v => v !== null).reduce((a, b) => a + b, 0) / arr.filter(v => v !== null).length;
+    const avg = (arr) => {
+      const valid = arr.filter(v => v !== null);
+      return valid.reduce((a, b) => a + b, 0) / valid.length;
+    };
 
-    // Group by month (0-11)
-    const monthlyMinC = Array(12).fill(null).map(() => []);
-    const monthlyMaxC = Array(12).fill(null).map(() => []);
-    const monthlyPrecipMm = Array(12).fill(null).map(() => []);
+    const mins = daily.temperature_2m_min.filter(v => v !== null);
+    const maxs = daily.temperature_2m_max.filter(v => v !== null);
+    const precips = daily.precipitation_sum.filter(v => v !== null);
 
-    daily.time.forEach((date, i) => {
-      const month = new Date(date).getMonth();
-      if (daily.temperature_2m_min[i] !== null) monthlyMinC[month].push(daily.temperature_2m_min[i]);
-      if (daily.temperature_2m_max[i] !== null) monthlyMaxC[month].push(daily.temperature_2m_max[i]);
-      if (daily.precipitation_sum[i] !== null) monthlyPrecipMm[month].push(daily.precipitation_sum[i]);
-    });
-
-    const monthlyAvgMinC = monthlyMinC.map(avg);
-    const monthlyAvgMaxC = monthlyMaxC.map(avg);
-    const monthlyAvgPrecipMm = monthlyPrecipMm.map(vals => vals.reduce((a, b) => a + b, 0) / (vals.length / 30));
-
-    const overallMinC = avg(monthlyAvgMinC.filter(v => !isNaN(v)));
-    const overallMaxC = avg(monthlyAvgMaxC.filter(v => !isNaN(v)));
-    const annualPrecipMm = monthlyAvgPrecipMm.filter(v => !isNaN(v)).reduce((a, b) => a + b, 0);
-    const annualPrecipIn = Math.round((annualPrecipMm / 25.4) * 10) / 10;
-
-    // Frost dates
-    const lastFrostMonth = (() => {
-      for (let m = 5; m >= 0; m--) {
-        if (!isNaN(monthlyAvgMinC[m]) && monthlyAvgMinC[m] <= 0) return m + 2;
-      }
-      return 1;
-    })();
-
-    const firstFrostMonth = (() => {
-      for (let m = 6; m < 12; m++) {
-        if (!isNaN(monthlyAvgMinC[m]) && monthlyAvgMinC[m] <= 0) return m + 1;
-      }
-      return 12;
-    })();
-
-    const frostFreeMonths = monthlyAvgMinC.filter(t => !isNaN(t) && t > 0).length;
-    const frostFreeDays = frostFreeMonths * 30;
-
-    const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    const monthlyFormatted = monthNames.map((name, i) => ({
-      month: name,
-      minF: isNaN(monthlyAvgMinC[i]) ? null : cToF(monthlyAvgMinC[i]),
-      maxF: isNaN(monthlyAvgMaxC[i]) ? null : cToF(monthlyAvgMaxC[i]),
-      precipIn: isNaN(monthlyAvgPrecipMm[i]) ? null : Math.round((monthlyAvgPrecipMm[i] / 25.4) * 10) / 10,
-      hasFrost: !isNaN(monthlyAvgMinC[i]) && monthlyAvgMinC[i] <= 0,
-    }));
+    const yearCount = 10;
+    const frostFreeDays = Math.round(mins.filter(t => t > 32).length / yearCount);
+    const annualPrecipIn = Math.round((precips.reduce((a, b) => a + b, 0) / yearCount) * 10) / 10;
+    const avgTempMinF = Math.round(avg(mins) * 10) / 10;
+    const avgTempMaxF = Math.round(avg(maxs) * 10) / 10;
 
     res.json({
       elevationFt,
       elevationM: Math.round(elevationM),
       annualPrecipIn,
-      avgTempMinF: cToF(overallMinC),
-      avgTempMaxF: cToF(overallMaxC),
+      avgTempMinF,
+      avgTempMaxF,
       frostFreeDays,
-      lastFrostMonth,
-      firstFrostMonth,
-      monthly: monthlyFormatted,
+      source: 'live',
     });
 
   } catch (err) {
