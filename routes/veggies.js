@@ -63,18 +63,20 @@ router.get('/', async (req, res) => {
         v.deer_risk, v.rabbit_risk, v.javelina_risk,
         v.squirrel_risk, v.bird_risk, v.wildlife_notes,
         v.typically_sold_as,
-        v.lowes_search_term, v.seed_search_term
+        v.lowes_product_name, v.lowes_affiliate_url, v.lowes_product_price,
+        v.burpee_product_name, v.burpee_affiliate_url
       FROM species s
       JOIN species_counties sc ON sc.species_id = s.id
       LEFT JOIN species_zones sz ON sz.species_id = s.id
       LEFT JOIN species_veggies v ON v.species_id = s.id
       WHERE sc.county_fips = $1
-        AND s.frost_free_days_min IS NOT NULL
-        AND s.food_safe = TRUE
+        AND s.category IN ('Forb/Herb', 'Dicot', 'Monocot', 'Gymnosperm')
         ${elevCondition}
         ${zoneCondition}
         ${nativeFilter}
-      ORDER BY s.common_name
+      ORDER BY
+        CASE WHEN sc.native_status ILIKE '%N%' THEN 0 ELSE 1 END,
+        s.common_name
       LIMIT $${params.length}
     `;
 
@@ -186,8 +188,9 @@ router.get('/compatibility', async (req, res) => {
         OR s.scientific_name ILIKE $1
         OR s.family ILIKE $1
       )
-      AND s.food_safe = TRUE
-      ORDER BY s.common_name
+      ORDER BY
+        CASE WHEN s.common_name ILIKE $1 THEN 0 ELSE 1 END,
+        s.common_name
       LIMIT 5
     `, [searchPattern]);
 
