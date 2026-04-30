@@ -53,8 +53,6 @@ router.get('/', async (req, res) => {
           OR s.scientific_name ILIKE $1
         )
       ORDER BY
-        -- Prioritize exact common name matches
-        CASE WHEN s.common_name ILIKE $1 THEN 0 ELSE 1 END,
         s.common_name
       LIMIT 20
     `, [searchPattern, countyFips || '00000']);
