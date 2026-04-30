@@ -11,6 +11,7 @@ app.use(express.json());
 app.use('/api/species', require('./routes/species'));
 app.use('/api/veggies', require('./routes/veggies'));
 app.use('/api/climate', require('./routes/climate'));
+app.use('/api/explore', require('./routes/explore'));
 
 app.get('/api/health', (req, res) => {
   res.json({
