@@ -14,6 +14,7 @@ app.use('/api/climate', require('./routes/climate'));
 app.use('/api/explore', require('./routes/explore'));
 app.use('/api/indoor', require('./routes/indoor'));
 app.use('/api/hydro', require('./routes/hydro'));
+app.use('/api/microgreens', require('./routes/microgreens'));
 
 app.get('/api/health', (req, res) => {
   res.json({
