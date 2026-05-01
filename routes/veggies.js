@@ -149,6 +149,7 @@ router.get('/', async (req, res) => {
         v.squirrel_risk, v.bird_risk, v.wildlife_notes,
         v.typically_sold_as,
         v.lowes_search_term, v.seed_search_term,
+        v.difficulty_level, v.difficulty_note,
         cu.intro AS culinary_intro,
         cu.culinary AS culinary_flavor
       FROM species s
