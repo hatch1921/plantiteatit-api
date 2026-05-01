@@ -148,10 +148,13 @@ router.get('/', async (req, res) => {
         v.deer_risk, v.rabbit_risk, v.javelina_risk,
         v.squirrel_risk, v.bird_risk, v.wildlife_notes,
         v.typically_sold_as,
-        v.lowes_search_term, v.seed_search_term
+        v.lowes_search_term, v.seed_search_term,
+        cu.intro AS culinary_intro,
+        cu.culinary AS culinary_flavor
       FROM species s
       JOIN species_counties sc ON sc.species_id = s.id
       LEFT JOIN species_veggies v ON v.species_id = s.id
+      LEFT JOIN species_culinary cu ON cu.species_id = s.id
       WHERE sc.county_fips = $1
         AND s.food_safe = TRUE
         AND s.frost_free_days_min IS NOT NULL
