@@ -129,11 +129,12 @@ router.get('/climate', async (req, res) => {
       SELECT DISTINCT
         s.id, s.usda_symbol, s.scientific_name, s.common_name,
         s.category, s.image_url,
+        s.drought_tolerance,
+        s.elevation_max_ft, s.frost_free_days_min,
         sv.days_to_maturity_min, sv.days_to_maturity_max,
         sv.difficulty_level,
-        s.elevation_max_ft, s.frost_free_days_min,
         sv.deer_risk, sv.rabbit_risk, sv.javelina_risk,
-        sv.drought_tolerance, sv.yield_per_plant,
+        sv.yield_per_plant,
         sv.start_indoors, sv.frost_hardy,
         sv.typically_sold_as, sv.lowes_search_term, sv.seed_search_term,
         cu.intro AS culinary_intro
