@@ -131,7 +131,7 @@ router.get('/climate', async (req, res) => {
         s.category, s.image_url,
         sv.days_to_maturity_min, sv.days_to_maturity_max,
         sv.difficulty_level,
-        sv.elevation_max_ft, sv.frost_free_days_min,
+        s.elevation_max_ft, s.frost_free_days_min,
         sv.deer_risk, sv.rabbit_risk, sv.javelina_risk,
         sv.drought_tolerance, sv.yield_per_plant,
         sv.start_indoors, sv.frost_hardy,
@@ -141,8 +141,8 @@ router.get('/climate', async (req, res) => {
       JOIN species_veggies sv ON sv.species_id = s.id
       LEFT JOIN species_culinary cu ON cu.species_id = s.id
       WHERE s.food_safe = TRUE
-        AND (sv.elevation_max_ft IS NULL OR sv.elevation_max_ft >= $1)
-        AND (sv.frost_free_days_min IS NULL OR sv.frost_free_days_min <= $2)
+        AND (s.elevation_max_ft IS NULL OR s.elevation_max_ft >= $1)
+        AND (s.frost_free_days_min IS NULL OR s.frost_free_days_min <= $2)
         ${excludeClause}
       ORDER BY s.common_name
       LIMIT ${limit}
