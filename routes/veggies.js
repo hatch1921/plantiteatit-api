@@ -105,6 +105,64 @@ router.get('/compatibility', async (req, res) => {
   }
 });
 
+// GET /api/veggies/climate?elevation=5030&frost_free_days=351&exclude_county=04019&limit=200
+// Returns all food_safe species matched by climate only — no county restriction
+// exclude_county optionally removes plants already verified for that county
+router.get('/climate', async (req, res) => {
+  try {
+    const elevation = parseInt(req.query.elevation) || 0;
+    const frost_free_days = parseInt(req.query.frost_free_days) || 365;
+    const limit = parseInt(req.query.limit) || 200;
+    const exclude_county = req.query.exclude_county || null;
+
+    const params = [elevation, frost_free_days];
+    let excludeClause = '';
+
+    if (exclude_county) {
+      params.push(exclude_county.padStart(5, '0'));
+      excludeClause = `AND s.id NOT IN (
+        SELECT species_id FROM species_counties WHERE county_fips = $${params.length}
+      )`;
+    }
+
+    const query = `
+      SELECT DISTINCT
+        s.id, s.usda_symbol, s.scientific_name, s.common_name,
+        s.category, s.image_url,
+        sv.days_to_maturity_min, sv.days_to_maturity_max,
+        sv.difficulty_level,
+        sv.elevation_max_ft, sv.frost_free_days_min,
+        sv.deer_risk, sv.rabbit_risk, sv.javelina_risk,
+        sv.drought_tolerance, sv.yield_per_plant,
+        sv.start_indoors, sv.frost_hardy,
+        sv.typically_sold_as, sv.lowes_search_term, sv.seed_search_term,
+        cu.intro AS culinary_intro
+      FROM species s
+      JOIN species_veggies sv ON sv.species_id = s.id
+      LEFT JOIN species_culinary cu ON cu.species_id = s.id
+      WHERE s.food_safe = TRUE
+        AND (sv.elevation_max_ft IS NULL OR sv.elevation_max_ft >= $1)
+        AND (sv.frost_free_days_min IS NULL OR sv.frost_free_days_min <= $2)
+        ${excludeClause}
+      ORDER BY s.common_name
+      LIMIT ${limit}
+    `;
+
+    const { rows } = await pool.query(query, params);
+
+    res.json({
+      total: rows.length,
+      elevation,
+      frost_free_days,
+      results: rows,
+    });
+
+  } catch (err) {
+    console.error('Climate route error:', err);
+    res.status(500).json({ error: 'Internal server error', detail: err.message });
+  }
+});
+
 // GET /api/veggies?county=04003&elevation=5003&limit=50
 router.get('/', async (req, res) => {
   try {
@@ -115,7 +173,6 @@ router.get('/', async (req, res) => {
     const countyFips = county.padStart(5, '0');
     const params = [countyFips];
     let elevCondition = '';
-    let zoneCondition = '';
 
     if (elevation) {
       const e = parseInt(elevation);
